@@ -3,6 +3,7 @@ package http
 import (
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -154,7 +155,11 @@ func (h *ServerHandler) dispatchTemplateResponse(
 ) {
 	res := h.workerPool.Submit(tmpl)
 	if res.Err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": res.Err.Error()})
+		status := http.StatusBadRequest
+		if errors.Is(res.Err, pool.ErrPoolBackpressure) {
+			status = http.StatusServiceUnavailable
+		}
+		writeJSON(w, status, map[string]string{"error": res.Err.Error()})
 		return
 	}
 

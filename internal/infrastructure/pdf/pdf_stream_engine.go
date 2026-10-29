@@ -112,16 +112,21 @@ func (b *StreamDocumentBuilder) WriteToBuffer(buf *bytes.Buffer) error {
 	return nil
 }
 
+var pdfTextReplacer = strings.NewReplacer(
+	"\r", " ",
+	"\n", " ",
+	"\\", "\\\\",
+	"(", "\\(",
+	")", "\\)",
+	"á", "a", "é", "e", "í", "i", "ó", "o", "ú", "u",
+	"Á", "A", "É", "E", "Í", "I", "Ó", "O", "Ú", "U",
+	"ñ", "n", "Ñ", "N",
+)
+
 func sanitizePdfText(in string) string {
-	replacer := strings.NewReplacer(
-		"\r", " ",
-		"\n", " ",
-		"\\", "\\\\",
-		"(", "\\(",
-		")", "\\)",
-		"á", "a", "é", "e", "í", "i", "ó", "o", "ú", "u",
-		"Á", "A", "É", "E", "Í", "I", "Ó", "O", "Ú", "U",
-		"ñ", "n", "Ñ", "N",
-	)
-	return replacer.Replace(in)
+	runes := []rune(in)
+	if len(runes) > 95 {
+		in = string(runes[:95])
+	}
+	return pdfTextReplacer.Replace(in)
 }

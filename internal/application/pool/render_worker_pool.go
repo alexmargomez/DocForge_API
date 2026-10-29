@@ -21,13 +21,14 @@ type RenderResult struct {
 }
 
 type renderJob struct {
-	tmpl   template.DocumentTemplate
-	respCh chan RenderResult
+	tmpl     template.DocumentTemplate
+	respCh   chan RenderResult
+	canceled *atomic.Bool
 }
 
 // Worker Pool + Object Pool Pattern (sync.Pool) + Backpressure —
 // Acota el paralelismo máximo de renderizado, recicla buffers (*bytes.Buffer) y protege
-// contra fugas de goroutines y timers aplicando time.NewTimer con Stop() tanto en admisión como en ejecución.
+// contra fugas de goroutines, timers y registros fantasma cancelando jobs expirados con atomic.Bool.
 type RenderWorkerPool struct {
 	workersCount  int
 	jobsCh        chan renderJob
@@ -59,9 +60,11 @@ func NewRenderWorkerPool(workers int, signer port.DocumentSignerPort) *RenderWor
 
 func (p *RenderWorkerPool) Submit(tmpl template.DocumentTemplate) RenderResult {
 	ch := make(chan RenderResult, 1)
+	canceled := &atomic.Bool{}
 	job := renderJob{
-		tmpl:   tmpl,
-		respCh: ch,
+		tmpl:     tmpl,
+		respCh:   ch,
+		canceled: canceled,
 	}
 
 	timer := time.NewTimer(2 * time.Second)
@@ -73,15 +76,20 @@ func (p *RenderWorkerPool) Submit(tmpl template.DocumentTemplate) RenderResult {
 		case res := <-ch:
 			return res
 		case <-timer.C:
+			canceled.Store(true)
 			return RenderResult{Err: ErrPoolBackpressure}
 		}
 	case <-timer.C:
+		canceled.Store(true)
 		return RenderResult{Err: ErrPoolBackpressure}
 	}
 }
 
 func (p *RenderWorkerPool) workerLoop(workerID int) {
 	for job := range p.jobsCh {
+		if job.canceled != nil && job.canceled.Load() {
+			continue
+		}
 		start := time.Now()
 		buf := p.bufferPool.Get().(*bytes.Buffer)
 		buf.Reset()
@@ -96,6 +104,10 @@ func (p *RenderWorkerPool) workerLoop(workerID int) {
 		outCopy := make([]byte, buf.Len())
 		copy(outCopy, buf.Bytes())
 		p.bufferPool.Put(buf)
+
+		if job.canceled != nil && job.canceled.Load() {
+			continue
+		}
 
 		shaHex, hmacHex := p.signer.ComputeHashes(outCopy)
 		latencyMs := float64(time.Since(start).Microseconds()) / 1000.0
@@ -117,7 +129,6 @@ func (p *RenderWorkerPool) workerLoop(workerID int) {
 
 		atomic.AddUint64(&p.totalRendered, 1)
 		atomic.AddUint64(&p.totalBytes, uint64(len(outCopy)))
-
 		job.respCh <- RenderResult{
 			PdfBytes:    outCopy,
 			AuditRecord: audit,
