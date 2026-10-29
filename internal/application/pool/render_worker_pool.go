@@ -2,14 +2,17 @@ package pool
 
 import (
 	"bytes"
+	"errors"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/alexmargomez/docforge-api/internal/application/template"
 	"github.com/alexmargomez/docforge-api/internal/domain/entity"
-	"github.com/alexmargomez/docforge-api/internal/domain/service"
+	"github.com/alexmargomez/docforge-api/internal/domain/port"
 )
+
+var ErrPoolBackpressure = errors.New("cola de renderizado saturada (backpressure activo): reintente en unos milisegundos")
 
 type RenderResult struct {
 	PdfBytes    []byte
@@ -22,19 +25,19 @@ type renderJob struct {
 	respCh chan RenderResult
 }
 
-// Worker Pool + Object Pool Pattern (sync.Pool) —
-// Acota el paralelismo máximo de renderizado y recicla buffers de memoria (*bytes.Buffer)
-// para evitar presión sobre el Garbage Collector de Go ante ráfagas masivas.
+// Worker Pool + Object Pool Pattern (sync.Pool) + Backpressure —
+// Acota el paralelismo máximo de renderizado, recicla buffers (*bytes.Buffer) y protege
+// contra fugas de goroutines aplicando timeout de admisión en la cola de trabajo.
 type RenderWorkerPool struct {
-	workersCount int
-	jobsCh       chan renderJob
-	bufferPool   sync.Pool
-	signer       *service.HashSignerService
+	workersCount  int
+	jobsCh        chan renderJob
+	bufferPool    sync.Pool
+	signer        port.DocumentSignerPort
 	totalRendered uint64
 	totalBytes    uint64
 }
 
-func NewRenderWorkerPool(workers int, signer *service.HashSignerService) *RenderWorkerPool {
+func NewRenderWorkerPool(workers int, signer port.DocumentSignerPort) *RenderWorkerPool {
 	if workers < 1 || workers > 64 {
 		workers = 8
 	}
@@ -56,11 +59,17 @@ func NewRenderWorkerPool(workers int, signer *service.HashSignerService) *Render
 
 func (p *RenderWorkerPool) Submit(tmpl template.DocumentTemplate) RenderResult {
 	ch := make(chan RenderResult, 1)
-	p.jobsCh <- renderJob{
+	job := renderJob{
 		tmpl:   tmpl,
 		respCh: ch,
 	}
-	return <-ch
+
+	select {
+	case p.jobsCh <- job:
+		return <-ch
+	case <-time.After(2 * time.Second):
+		return RenderResult{Err: ErrPoolBackpressure}
+	}
 }
 
 func (p *RenderWorkerPool) workerLoop(workerID int) {
@@ -110,9 +119,9 @@ func (p *RenderWorkerPool) workerLoop(workerID int) {
 
 func (p *RenderWorkerPool) Metrics() map[string]any {
 	return map[string]any{
-		"workersCount":          p.workersCount,
+		"workersCount":           p.workersCount,
 		"totalDocumentsRendered": atomic.LoadUint64(&p.totalRendered),
-		"totalStreamBytes":      atomic.LoadUint64(&p.totalBytes),
-		"verifiedRegistrySize":  p.signer.CountRegistered(),
+		"totalStreamBytes":       atomic.LoadUint64(&p.totalBytes),
+		"verifiedRegistrySize":   p.signer.CountRegistered(),
 	}
 }

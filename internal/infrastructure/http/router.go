@@ -11,20 +11,28 @@ import (
 	"github.com/alexmargomez/docforge-api/internal/application/pool"
 	"github.com/alexmargomez/docforge-api/internal/application/template"
 	"github.com/alexmargomez/docforge-api/internal/domain/entity"
-	"github.com/alexmargomez/docforge-api/internal/domain/service"
+	"github.com/alexmargomez/docforge-api/internal/domain/port"
 	"github.com/alexmargomez/docforge-api/internal/infrastructure/qr"
 )
 
+const MaxRequestBodyBytes = 256 * 1024 // 256 KB límite estricto contra agotamiento de RAM
+
 type ServerHandler struct {
 	workerPool *pool.RenderWorkerPool
-	signer     *service.HashSignerService
+	signer     port.DocumentSignerPort
 }
 
-func NewServerHandler(workerPool *pool.RenderWorkerPool, signer *service.HashSignerService) *ServerHandler {
+func NewServerHandler(workerPool *pool.RenderWorkerPool, signer port.DocumentSignerPort) *ServerHandler {
 	return &ServerHandler{
 		workerPool: workerPool,
 		signer:     signer,
 	}
+}
+
+func decodeBoundedJSON(w http.ResponseWriter, r *http.Request, dst any) error {
+	r.Body = http.MaxBytesReader(w, r.Body, MaxRequestBodyBytes)
+	defer r.Body.Close()
+	return json.NewDecoder(r.Body).Decode(dst)
 }
 
 func (h *ServerHandler) RegisterRoutes(mux *http.ServeMux) {
@@ -44,7 +52,7 @@ func (h *ServerHandler) handleHealth(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"status":       "UP",
 		"service":      "DocForge Stream API (Go 1.22)",
-		"architecture": "Pipeline & Filters + Hexagonal + Worker Pool (sync.Pool)",
+		"architecture": "Pipeline & Filters + Hexagonal + Worker Pool (sync.Pool + Backpressure)",
 		"metrics":      h.workerPool.Metrics(),
 		"timestamp":    time.Now().UTC().Format(time.RFC3339),
 	})
@@ -56,8 +64,8 @@ func (h *ServerHandler) handleInvoiceA4(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	var payload entity.InvoiceA4Payload
-	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "JSON inválido: " + err.Error()})
+	if err := decodeBoundedJSON(w, r, &payload); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "JSON inválido o excede 256KB: " + err.Error()})
 		return
 	}
 	h.dispatchTemplateResponse(w, r, template.InvoiceA4Template{Payload: payload}, "invoice-"+payload.InvoiceNumber+".pdf")
@@ -69,8 +77,8 @@ func (h *ServerHandler) handlePosTicket(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	var payload entity.PosTicketPayload
-	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "JSON inválido: " + err.Error()})
+	if err := decodeBoundedJSON(w, r, &payload); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "JSON inválido o excede 256KB: " + err.Error()})
 		return
 	}
 	h.dispatchTemplateResponse(w, r, template.PosThermalTicketTemplate{Payload: payload}, "pos-ticket-"+payload.TicketNumber+".pdf")
@@ -82,8 +90,8 @@ func (h *ServerHandler) handlePayrollStub(w http.ResponseWriter, r *http.Request
 		return
 	}
 	var payload entity.PayrollStubPayload
-	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "JSON inválido: " + err.Error()})
+	if err := decodeBoundedJSON(w, r, &payload); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "JSON inválido o excede 256KB: " + err.Error()})
 		return
 	}
 	h.dispatchTemplateResponse(w, r, template.PayrollStubTemplate{Payload: payload}, "payroll-"+payload.EmployeeDoc+".pdf")
@@ -95,8 +103,8 @@ func (h *ServerHandler) handleMedicalOrder(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	var payload entity.MedicalOrderPayload
-	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "JSON inválido: " + err.Error()})
+	if err := decodeBoundedJSON(w, r, &payload); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "JSON inválido o excede 256KB: " + err.Error()})
 		return
 	}
 	h.dispatchTemplateResponse(w, r, template.MedicalOrderTemplate{Payload: payload}, "rx-"+payload.OrderNumber+".pdf")
@@ -108,8 +116,8 @@ func (h *ServerHandler) handleQrGenerate(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	var payload entity.QrRequestPayload
-	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "JSON inválido: " + err.Error()})
+	if err := decodeBoundedJSON(w, r, &payload); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "JSON inválido o excede 256KB: " + err.Error()})
 		return
 	}
 	res := qr.GenerateVectorQR(payload.Content, payload.SizePx)
