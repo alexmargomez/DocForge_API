@@ -114,6 +114,8 @@ func (b *StreamDocumentBuilder) WriteToBuffer(buf *bytes.Buffer) error {
 
 func sanitizePdfText(in string) string {
 	replacer := strings.NewReplacer(
+		"\r", " ",
+		"\n", " ",
 		"\\", "\\\\",
 		"(", "\\(",
 		")", "\\)",

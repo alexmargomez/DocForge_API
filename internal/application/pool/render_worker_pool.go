@@ -12,7 +12,7 @@ import (
 	"github.com/alexmargomez/docforge-api/internal/domain/port"
 )
 
-var ErrPoolBackpressure = errors.New("cola de renderizado saturada (backpressure activo): reintente en unos milisegundos")
+var ErrPoolBackpressure = errors.New("cola de renderizado saturada o timeout excedido (backpressure activo): reintente en unos milisegundos")
 
 type RenderResult struct {
 	PdfBytes    []byte
@@ -27,7 +27,7 @@ type renderJob struct {
 
 // Worker Pool + Object Pool Pattern (sync.Pool) + Backpressure —
 // Acota el paralelismo máximo de renderizado, recicla buffers (*bytes.Buffer) y protege
-// contra fugas de goroutines aplicando timeout de admisión en la cola de trabajo.
+// contra fugas de goroutines y timers aplicando time.NewTimer con Stop() tanto en admisión como en ejecución.
 type RenderWorkerPool struct {
 	workersCount  int
 	jobsCh        chan renderJob
@@ -64,10 +64,18 @@ func (p *RenderWorkerPool) Submit(tmpl template.DocumentTemplate) RenderResult {
 		respCh: ch,
 	}
 
+	timer := time.NewTimer(2 * time.Second)
+	defer timer.Stop()
+
 	select {
 	case p.jobsCh <- job:
-		return <-ch
-	case <-time.After(2 * time.Second):
+		select {
+		case res := <-ch:
+			return res
+		case <-timer.C:
+			return RenderResult{Err: ErrPoolBackpressure}
+		}
+	case <-timer.C:
 		return RenderResult{Err: ErrPoolBackpressure}
 	}
 }

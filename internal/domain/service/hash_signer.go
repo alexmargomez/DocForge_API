@@ -9,19 +9,37 @@ import (
 	"github.com/alexmargomez/docforge-api/internal/domain/entity"
 )
 
+const DefaultMaxAuditCapacity = 5000
+
+// HashSignerService implementa firma HMAC-SHA256 y un registro de auditoría en memoria
+// con Ring Buffer FIFO O(1) que desaloja únicamente el documento más antiguo al alcanzar
+// la capacidad máxima, sin purgar jamás la totalidad del historial.
 type HashSignerService struct {
-	secretKey []byte
-	mu        sync.RWMutex
-	registry  map[string]entity.DocumentAuditRecord
+	secretKey   []byte
+	mu          sync.RWMutex
+	maxCapacity int
+	registry    map[string]entity.DocumentAuditRecord
+	ring        []string
+	head        int
 }
 
 func NewHashSignerService(secret string) *HashSignerService {
+	return NewHashSignerServiceWithCapacity(secret, DefaultMaxAuditCapacity)
+}
+
+func NewHashSignerServiceWithCapacity(secret string, maxCapacity int) *HashSignerService {
 	if secret == "" {
 		secret = "docforge_default_hmac_secret_2026"
 	}
+	if maxCapacity < 1 {
+		maxCapacity = DefaultMaxAuditCapacity
+	}
 	return &HashSignerService{
-		secretKey: []byte(secret),
-		registry:  make(map[string]entity.DocumentAuditRecord),
+		secretKey:   []byte(secret),
+		maxCapacity: maxCapacity,
+		registry:    make(map[string]entity.DocumentAuditRecord, maxCapacity),
+		ring:        make([]string, 0, maxCapacity),
+		head:        0,
 	}
 }
 
@@ -38,10 +56,22 @@ func (s *HashSignerService) ComputeHashes(data []byte) (sha256Hex string, hmacHe
 func (s *HashSignerService) RegisterDocument(rec entity.DocumentAuditRecord) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if len(s.registry) > 5000 {
-		s.registry = make(map[string]entity.DocumentAuditRecord)
+
+	hash := rec.DocumentHashSHA256
+	if _, exists := s.registry[hash]; exists {
+		s.registry[hash] = rec
+		return
 	}
-	s.registry[rec.DocumentHashSHA256] = rec
+
+	if len(s.ring) < s.maxCapacity {
+		s.ring = append(s.ring, hash)
+	} else {
+		oldestHash := s.ring[s.head]
+		delete(s.registry, oldestHash)
+		s.ring[s.head] = hash
+		s.head = (s.head + 1) % s.maxCapacity
+	}
+	s.registry[hash] = rec
 }
 
 func (s *HashSignerService) VerifyHash(hash string) (entity.DocumentAuditRecord, bool) {

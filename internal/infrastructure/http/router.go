@@ -172,8 +172,14 @@ func (h *ServerHandler) dispatchTemplateResponse(
 		return
 	}
 
+	safeFilename := strings.Map(func(r rune) rune {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' || r == '_' || r == '.' {
+			return r
+		}
+		return '_'
+	}, filename)
 	w.Header().Set("Content-Type", "application/pdf")
-	w.Header().Set("Content-Disposition", fmt.Sprintf(`inline; filename="%s"`, filename))
+	w.Header().Set("Content-Disposition", fmt.Sprintf(`inline; filename="%s"`, safeFilename))
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(res.PdfBytes)
 }

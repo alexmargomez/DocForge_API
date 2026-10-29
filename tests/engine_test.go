@@ -47,6 +47,27 @@ func TestInvoiceA4StreamAndSignatureVerification(t *testing.T) {
 	}
 }
 
+func TestHashSignerFifoRingBufferDoesNotWipeHistory(t *testing.T) {
+	signer := service.NewHashSignerServiceWithCapacity("ring_secret", 3)
+	signer.RegisterDocument(entity.DocumentAuditRecord{DocumentHashSHA256: "hash_1", ReferenceNumber: "DOC-1"})
+	signer.RegisterDocument(entity.DocumentAuditRecord{DocumentHashSHA256: "hash_2", ReferenceNumber: "DOC-2"})
+	signer.RegisterDocument(entity.DocumentAuditRecord{DocumentHashSHA256: "hash_3", ReferenceNumber: "DOC-3"})
+	signer.RegisterDocument(entity.DocumentAuditRecord{DocumentHashSHA256: "hash_4", ReferenceNumber: "DOC-4"})
+
+	if signer.CountRegistered() != 3 {
+		t.Fatalf("se esperaban 3 documentos retenidos en el ring buffer, obtenido %d", signer.CountRegistered())
+	}
+	if _, ok := signer.VerifyHash("hash_1"); ok {
+		t.Fatalf("hash_1 debía ser desalojado por FIFO")
+	}
+	if _, ok := signer.VerifyHash("hash_2"); !ok {
+		t.Fatalf("hash_2 fue borrado erróneamente; el ring buffer no debe purgar todo el historial")
+	}
+	if _, ok := signer.VerifyHash("hash_4"); !ok {
+		t.Fatalf("hash_4 debe existir en el registro")
+	}
+}
+
 func TestConcurrentWorkerPoolPosTickets(t *testing.T) {
 	signer := service.NewHashSignerService("concurrent_secret")
 	workerPool := pool.NewRenderWorkerPool(8, signer)
