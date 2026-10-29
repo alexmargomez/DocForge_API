@@ -118,15 +118,23 @@ var pdfTextReplacer = strings.NewReplacer(
 	"\\", "\\\\",
 	"(", "\\(",
 	")", "\\)",
-	"á", "a", "é", "e", "í", "i", "ó", "o", "ú", "u",
-	"Á", "A", "É", "E", "Í", "I", "Ó", "O", "Ú", "U",
+	"á", "a", "é", "e", "í", "i", "ó", "o", "ú", "u", "ü", "u",
+	"Á", "A", "É", "E", "Í", "I", "Ó", "O", "Ú", "U", "Ü", "U",
 	"ñ", "n", "Ñ", "N",
 )
 
 func sanitizePdfText(in string) string {
-	runes := []rune(in)
-	if len(runes) > 95 {
-		in = string(runes[:95])
+	replaced := pdfTextReplacer.Replace(in)
+	cleanRunes := make([]rune, 0, len(replaced))
+	for _, r := range replaced {
+		if r >= 32 && r <= 126 {
+			cleanRunes = append(cleanRunes, r)
+		} else if r > 126 {
+			cleanRunes = append(cleanRunes, '?')
+		}
 	}
-	return pdfTextReplacer.Replace(in)
+	if len(cleanRunes) > 120 {
+		cleanRunes = cleanRunes[:120]
+	}
+	return string(cleanRunes)
 }
